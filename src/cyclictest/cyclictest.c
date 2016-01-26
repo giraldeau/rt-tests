@@ -1739,7 +1739,7 @@ static void print_hist(struct thread_param *par[], int nthreads)
 	fprintf(fd, "# Avg Latencies:");
 	for (j = 0; j < nthreads; j++)
 		fprintf(fd, " %05" PRIu64, par[j]->stats->cycles ?
-		       (long)(par[j]->stats->avg/par[j]->stats->cycles) : 0);
+		       (uint64_t)(par[j]->stats->avg/par[j]->stats->cycles) : 0);
 	fprintf(fd, "\n");
 	fprintf(fd, "# Max Latencies:");
 	maxmax = 0;
@@ -1749,7 +1749,7 @@ static void print_hist(struct thread_param *par[], int nthreads)
 			maxmax = par[j]->stats->max;
 	}
 	if (histofall && nthreads > 1)
-		fprintf(fd, " %05lu", maxmax);
+		fprintf(fd, " %05" PRIu64, maxmax);
 	fprintf(fd, "\n");
 	fprintf(fd, "# Histogram Overflows:");
 	alloverflows = 0;
@@ -1758,7 +1758,7 @@ static void print_hist(struct thread_param *par[], int nthreads)
 		alloverflows += par[j]->stats->hist_overflow;
 	}
 	if (histofall && nthreads > 1)
-		fprintf(fd, " %05lu", alloverflows);
+		fprintf(fd, " %05" PRIu64, alloverflows);
 	fprintf(fd, "\n");
 
 	fprintf(fd, "# Histogram Overflow at cycle number:\n");
