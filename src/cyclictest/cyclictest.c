@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <linux/unistd.h>
+#include <inttypes.h>
 
 #include <sys/prctl.h>
 #include <sys/stat.h>
@@ -145,7 +146,7 @@ struct thread_param {
 	int clock;
 	unsigned long max_cycles;
 	struct thread_stat *stats;
-	int bufmsk;
+	uint64_t bufmsk;
 	unsigned long interval;
 	int cpu;
 	int node;
@@ -154,23 +155,23 @@ struct thread_param {
 
 /* Struct for statistics */
 struct thread_stat {
-	unsigned long cycles;
-	unsigned long cyclesread;
-	long min;
-	long max;
-	long act;
+	uint64_t cycles;
+	uint64_t cyclesread;
+	uint64_t min;
+	uint64_t max;
+	uint64_t act;
 	double avg;
-	long *values;
-	long *hist_array;
-	long *outliers;
+	uint64_t *values;
+	uint64_t *hist_array;
+	uint64_t *outliers;
 	pthread_t thread;
 	int threadstarted;
 	int tid;
 	long reduce;
-	long redmax;
-	long cycleofmax;
-	long hist_overflow;
-	long num_outliers;
+	uint64_t redmax;
+	uint64_t cycleofmax;
+	uint64_t hist_overflow;
+	uint64_t num_outliers;
 };
 
 static int shutdown;
@@ -433,6 +434,8 @@ static int trace_file_exists(char *name)
 	return stat(path, &sbuf) ? 0 : 1;
 }
 
+static void ignore(int ret) { (void) ret; }
+
 #define TRACEBUFSIZ 1024
 static __thread char tracebuf[TRACEBUFSIZ];
 
@@ -450,7 +453,7 @@ static void tracemark(char *fmt, ...)
 	va_start(ap, fmt);
 	len = vsnprintf(tracebuf, TRACEBUFSIZ, fmt, ap);
 	va_end(ap);
-	write(tracemark_fd, tracebuf, len);
+	ignore(write(tracemark_fd, tracebuf, len));
 }
 
 
@@ -463,7 +466,7 @@ static void tracing(int on)
 		case KV_26_LT24: prctl(0, 1); break;
 		case KV_26_33:
 		case KV_30:
-			write(trace_fd, "1", 1);
+			ignore(write(trace_fd, "1", 1));
 			break;
 		default:	 break;
 		}
@@ -473,7 +476,7 @@ static void tracing(int on)
 		case KV_26_LT24: prctl(0, 0); break;
 		case KV_26_33:
 		case KV_30:
-			write(trace_fd, "0", 1);
+			ignore(write(trace_fd, "0", 1));
 			break;
 		default:	break;
 		}
@@ -947,8 +950,8 @@ static void *timerthread(void *param)
 
 		if (!stopped && tracelimit && (diff > tracelimit)) {
 			stopped++;
-			tracemark("hit latency threshold (%llu > %d)",
-				  (unsigned long long) diff, tracelimit);
+			tracemark("hit latency threshold (%" PRIu64 " > %d)",
+				  diff, tracelimit);
 			tracing(0);
 			shutdown++;
 			pthread_mutex_lock(&break_thread_id_lock);
@@ -1126,7 +1129,7 @@ static int use_system;
 static int priority;
 static int policy = SCHED_OTHER;	/* default policy if not specified */
 static int num_threads = 1;
-static int max_cycles;
+static uint64_t max_cycles;
 static int clocksel = 0;
 static int quiet;
 static int interval = DEFAULT_INTERVAL;
@@ -1687,8 +1690,8 @@ static void print_tids(struct thread_param *par[], int nthreads)
 static void print_hist(struct thread_param *par[], int nthreads)
 {
 	int i, j;
-	unsigned long long int log_entries[nthreads+1];
-	unsigned long maxmax, alloverflows;
+	uint64_t log_entries[nthreads+1];
+	uint64_t maxmax, alloverflows;
 	FILE *fd;
 
 	bzero(log_entries, sizeof(log_entries));
@@ -1705,43 +1708,43 @@ static void print_hist(struct thread_param *par[], int nthreads)
 
 	fprintf(fd, "# Histogram\n");
 	for (i = 0; i < histogram; i++) {
-		unsigned long long int allthreads = 0;
+		uint64_t allthreads = 0;
 
 		fprintf(fd, "%06d ", i);
 
 		for (j = 0; j < nthreads; j++) {
-			unsigned long curr_latency=par[j]->stats->hist_array[i];
-			fprintf(fd, "%06lu", curr_latency);
+			uint64_t curr_latency=par[j]->stats->hist_array[i];
+			fprintf(fd, "%06" PRIu64, curr_latency);
 			if (j < nthreads - 1)
 				fprintf(fd, "\t");
 			log_entries[j] += curr_latency;
 			allthreads += curr_latency;
 		}
 		if (histofall && nthreads > 1) {
-			fprintf(fd, "\t%06llu", allthreads);
+			fprintf(fd, "\t%06" PRIu64, allthreads);
 			log_entries[nthreads] += allthreads;
 		}
 		fprintf(fd, "\n");
 	}
 	fprintf(fd, "# Total:");
 	for (j = 0; j < nthreads; j++)
-		fprintf(fd, " %09llu", log_entries[j]);
+		fprintf(fd, " %09" PRIu64, log_entries[j]);
 	if (histofall && nthreads > 1)
-		fprintf(fd, " %09llu", log_entries[nthreads]);
+		fprintf(fd, " %09" PRIu64, log_entries[nthreads]);
 	fprintf(fd, "\n");
 	fprintf(fd, "# Min Latencies:");
 	for (j = 0; j < nthreads; j++)
-		fprintf(fd, " %05lu", par[j]->stats->min);
+		fprintf(fd, " %05" PRIu64, par[j]->stats->min);
 	fprintf(fd, "\n");
 	fprintf(fd, "# Avg Latencies:");
 	for (j = 0; j < nthreads; j++)
-		fprintf(fd, " %05lu", par[j]->stats->cycles ?
+		fprintf(fd, " %05" PRIu64, par[j]->stats->cycles ?
 		       (long)(par[j]->stats->avg/par[j]->stats->cycles) : 0);
 	fprintf(fd, "\n");
 	fprintf(fd, "# Max Latencies:");
 	maxmax = 0;
 	for (j = 0; j < nthreads; j++) {
-		fprintf(fd, " %05lu", par[j]->stats->max);
+		fprintf(fd, " %05" PRIu64, par[j]->stats->max);
 		if (par[j]->stats->max > maxmax)
 			maxmax = par[j]->stats->max;
 	}
@@ -1751,7 +1754,7 @@ static void print_hist(struct thread_param *par[], int nthreads)
 	fprintf(fd, "# Histogram Overflows:");
 	alloverflows = 0;
 	for (j = 0; j < nthreads; j++) {
-		fprintf(fd, " %05lu", par[j]->stats->hist_overflow);
+		fprintf(fd, " %05" PRIu64, par[j]->stats->hist_overflow);
 		alloverflows += par[j]->stats->hist_overflow;
 	}
 	if (histofall && nthreads > 1)
@@ -1762,9 +1765,9 @@ static void print_hist(struct thread_param *par[], int nthreads)
 	for (i = 0; i < nthreads; i++) {
 		fprintf(fd, "# Thread %d:", i);
 		for (j = 0; j < par[i]->stats->num_outliers; j++)
-			fprintf(fd, " %05lu", par[i]->stats->outliers[j]);
+			fprintf(fd, " %05" PRIu64, par[i]->stats->outliers[j]);
 		if (par[i]->stats->num_outliers < par[i]->stats->hist_overflow)
-			fprintf(fd, " # %05lu others", par[i]->stats->hist_overflow - par[i]->stats->num_outliers);
+			fprintf(fd, " # %05" PRIu64 " others", par[i]->stats->hist_overflow - par[i]->stats->num_outliers);
 		fprintf(fd, "\n");
 	}
 	fprintf(fd, "\n");
@@ -1777,23 +1780,23 @@ static void print_stat(FILE *fp, struct thread_param *par, int index, int verbos
 {
 	struct thread_stat *stat = par->stats;
 
+	static char *fmt_nsec =	"T:%2d (%5d) P:%2d I:%ld C:%7" PRIu64
+				" Min:%7" PRIu64 " Act:%8" PRIu64
+				" Avg:%8" PRIu64 " Max:%8" PRIu64 "\n";
+	static char *fmt_usec =	"T:%2d (%5d) P:%2d I:%ld C:%7" PRIu64
+				" Min:%7" PRIu64 " Act:%8" PRIu64
+				" Avg:%8" PRIu64 " Max:%8" PRIu64 "\n";
 	if (!verbose) {
 		if (quiet != 1) {
-			char *fmt;
-			if (use_nsecs)
-				fmt = "T:%2d (%5d) P:%2d I:%ld C:%7lu "
-					"Min:%7ld Act:%8ld Avg:%8ld Max:%8ld\n";
-			else
-				fmt = "T:%2d (%5d) P:%2d I:%ld C:%7lu "
-					"Min:%7ld Act:%5ld Avg:%5ld Max:%8ld\n";
+			char *fmt = use_nsecs ? fmt_nsec : fmt_usec;
 			fprintf(fp, fmt, index, stat->tid, par->prio,
 				par->interval, stat->cycles, stat->min, stat->act,
-				stat->cycles ?
-				(long)(stat->avg/stat->cycles) : 0, stat->max);
+				stat->cycles ? (uint64_t)(stat->avg/stat->cycles) : 0,
+				stat->max);
 		}
 	} else {
 		while (stat->cycles != stat->cyclesread) {
-			long diff = stat->values
+			uint64_t diff = stat->values
 			    [stat->cyclesread & par->bufmsk];
 
 			if (diff > stat->redmax) {
@@ -1801,7 +1804,7 @@ static void print_stat(FILE *fp, struct thread_param *par, int index, int verbos
 				stat->cycleofmax = stat->cyclesread;
 			}
 			if (++stat->reduce == oscope_reduction) {
-				fprintf(fp, "%8d:%8lu:%8ld\n", index,
+				fprintf(fp, "%8d:%8" PRIu64 ":%8" PRIu64 "\n", index,
 					stat->cycleofmax, stat->redmax);
 				stat->reduce = 0;
 				stat->redmax = 0;
@@ -2060,7 +2063,7 @@ int main(int argc, char **argv)
 		}
 
 		if (verbose) {
-			int bufsize = VALBUF_SIZE * sizeof(long);
+			int bufsize = VALBUF_SIZE * sizeof(*stat->values);
 			stat->values = threadalloc(bufsize, node);
 			if (!stat->values)
 				goto outall;
