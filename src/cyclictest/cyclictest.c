@@ -943,6 +943,14 @@ static void *timerthread(void *param)
 			if (refresh_on_max)
 				pthread_cond_signal(&refresh_on_max_cond);
 		}
+
+		if (diff > INT_MAX) {
+			printf("err diff: %" PRIu64 "\n", diff);
+			printf("now : %ld.%09ld\n", now.tv_sec, now.tv_nsec);
+			printf("next: %ld.%09ld\n", next.tv_sec, next.tv_nsec);
+			shutdown++;
+		}
+
 		stat->avg += (double) diff;
 
 		if (duration && (calcdiff(now, stop) >= 0))
