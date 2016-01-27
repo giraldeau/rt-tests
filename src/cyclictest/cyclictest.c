@@ -98,7 +98,7 @@ extern int clock_nanosleep(clockid_t __clock_id, int __flags,
 			   __const struct timespec *__req,
 			   struct timespec *__rem);
 #endif
-
+#define NSEC_PER_USEC		1000
 #define USEC_PER_SEC		1000000
 #define NSEC_PER_SEC		1000000000
 
@@ -390,20 +390,24 @@ static inline int tsgreater(struct timespec *a, struct timespec *b)
 		(a->tv_sec == b->tv_sec && a->tv_nsec > b->tv_nsec));
 }
 
+static inline int64_t calcdiff_scale(struct timespec t1, struct timespec t2,
+		long scale_sec, long scale_nsec)
+{
+	uint64_t v1 = scale_sec * t1.tv_sec + t1.tv_nsec / scale_nsec;
+	uint64_t v2 = scale_sec * t2.tv_sec + t2.tv_nsec / scale_nsec;
+	printf("v1=%" PRIu64 "\n", v1);
+	printf("v2=%" PRIu64 "\n", v2);
+	return v1 - v2;
+}
+
 static inline int64_t calcdiff(struct timespec t1, struct timespec t2)
 {
-	int64_t diff;
-	diff = USEC_PER_SEC * (long long)((int) t1.tv_sec - (int) t2.tv_sec);
-	diff += ((int) t1.tv_nsec - (int) t2.tv_nsec) / 1000;
-	return diff;
+	return calcdiff_scale(t1, t2, USEC_PER_SEC, NSEC_PER_USEC);
 }
 
 static inline int64_t calcdiff_ns(struct timespec t1, struct timespec t2)
 {
-	int64_t diff;
-	diff = NSEC_PER_SEC * (int64_t)((int) t1.tv_sec - (int) t2.tv_sec);
-	diff += ((int) t1.tv_nsec - (int) t2.tv_nsec);
-	return diff;
+	return calcdiff_scale(t1, t2, NSEC_PER_SEC, 1);
 }
 
 static void traceopt(char *option)
@@ -945,9 +949,24 @@ static void *timerthread(void *param)
 		}
 
 		if (diff > INT_MAX) {
+
+			struct timespec res;
+			res.tv_sec  = now.tv_sec  - next.tv_sec;
+			res.tv_nsec = now.tv_nsec - next.tv_nsec;
+
 			printf("err diff: %" PRIu64 "\n", diff);
 			printf("now : %ld.%09ld\n", now.tv_sec, now.tv_nsec);
 			printf("next: %ld.%09ld\n", next.tv_sec, next.tv_nsec);
+			printf("res1: %ld.%09ld\n", res.tv_sec, res.tv_nsec);
+
+			if(now.tv_nsec < next.tv_nsec) {
+				res.tv_sec--;
+				res.tv_nsec += NSEC_PER_SEC;
+			}
+
+			printf("res2: %ld.%09ld\n", res.tv_sec, res.tv_nsec);
+			uint64_t d = USEC_PER_SEC * res.tv_sec + res.tv_nsec / 1000;
+			printf("d   : %" PRIu64 "\n", d);
 			shutdown++;
 		}
 
@@ -1856,6 +1875,19 @@ static void *fifothread(void *param)
 	return NULL;
 }
 
+void test_timestamps()
+{
+	//now : 511469.691540395
+	//next: 511469.692524458
+	//res1: 0.-00984063
+	//res2: -1.999015937
+	//d   : 18446744073709550631
+
+	struct timespec t1 = { .tv_sec = 511469, .tv_nsec = 691540395 };
+	struct timespec t2 = { .tv_sec = 511469, .tv_nsec = 692524458 };
+	uint64_t diff = calcdiff(t1, t2);
+	printf("diff=%" PRIu64 "\n", diff);
+}
 
 int main(int argc, char **argv)
 {
@@ -1866,6 +1898,8 @@ int main(int argc, char **argv)
 	int i, ret = -1;
 	int status;
 
+	test_timestamps();
+
 	process_options(argc, argv, max_cpus);
 
 	if (check_privs())
@@ -1873,7 +1907,6 @@ int main(int argc, char **argv)
 
 	if (verbose)
 		printf("Max CPUs = %d\n", max_cpus);
-
 
 	/* lock all memory (prevent swapping) */
 	if (lockall)
