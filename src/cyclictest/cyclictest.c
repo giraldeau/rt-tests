@@ -914,6 +914,16 @@ void *timerthread(void *param)
 			goto out;
 		}
 
+		// the next interval was too far in the future, rewind it
+		while (calcdiff_ns(now, next) < 0) {
+			next.tv_sec -= interval.tv_sec;
+			next.tv_nsec -= interval.tv_nsec;
+			if (next.tv_nsec < 0) {
+				next.tv_sec--;
+				next.tv_nsec += NSEC_PER_SEC;
+			}
+		}
+
 		if (use_nsecs)
 			diff = calcdiff_ns(now, next);
 		else
