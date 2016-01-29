@@ -842,7 +842,7 @@ static void *timerthread(void *param)
 	}
 	else
 #endif
-		clock_gettime(par->clock, &now);
+	clock_gettime(par->clock, &now);
 
 	next = now;
 	next.tv_sec += interval.tv_sec;
@@ -930,6 +930,16 @@ static void *timerthread(void *param)
 			if (ret != EINTR)
 				warn("clock_getttime() failed. errno: %d\n", errno);
 			goto out;
+		}
+
+		// the next interval was too far in the future, rewind it
+		while (calcdiff_ns(now, next) < 0) {
+			next.tv_sec -= interval.tv_sec;
+			next.tv_nsec -= interval.tv_nsec;
+			if (next.tv_nsec < 0) {
+				next.tv_sec--;
+				next.tv_nsec += NSEC_PER_SEC;
+			}
 		}
 
 		if (use_nsecs)
