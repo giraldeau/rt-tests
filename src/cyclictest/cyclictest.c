@@ -27,6 +27,7 @@
 #include <limits.h>
 #include <linux/unistd.h>
 #include <inttypes.h>
+#include <assert.h>
 
 #include <sys/prctl.h>
 #include <sys/stat.h>
@@ -384,28 +385,27 @@ static inline void tsnorm(struct timespec *ts)
 	}
 }
 
+// true if a > b
 static inline int tsgreater(struct timespec *a, struct timespec *b)
 {
 	return ((a->tv_sec > b->tv_sec) ||
 		(a->tv_sec == b->tv_sec && a->tv_nsec > b->tv_nsec));
 }
 
-static inline int64_t calcdiff_scale(struct timespec t1, struct timespec t2,
+static inline long calcdiff_scale(struct timespec t1, struct timespec t2,
 		long scale_sec, long scale_nsec)
 {
-	uint64_t v1 = scale_sec * t1.tv_sec + t1.tv_nsec / scale_nsec;
-	uint64_t v2 = scale_sec * t2.tv_sec + t2.tv_nsec / scale_nsec;
-	printf("v1=%" PRIu64 "\n", v1);
-	printf("v2=%" PRIu64 "\n", v2);
-	return v1 - v2;
+	long sec = t1.tv_sec - t2.tv_sec;
+	long nsec = t1.tv_nsec - t2.tv_nsec;
+	return scale_sec * sec + nsec / scale_nsec;
 }
 
-static inline int64_t calcdiff(struct timespec t1, struct timespec t2)
+static inline long calcdiff(struct timespec t1, struct timespec t2)
 {
 	return calcdiff_scale(t1, t2, USEC_PER_SEC, NSEC_PER_USEC);
 }
 
-static inline int64_t calcdiff_ns(struct timespec t1, struct timespec t2)
+static inline long calcdiff_ns(struct timespec t1, struct timespec t2)
 {
 	return calcdiff_scale(t1, t2, NSEC_PER_SEC, 1);
 }
@@ -459,8 +459,6 @@ static void tracemark(char *fmt, ...)
 	va_end(ap);
 	ignore(write(tracemark_fd, tracebuf, len));
 }
-
-
 
 static void tracing(int on)
 {
@@ -769,6 +767,12 @@ try_again:
  * - CLOCK_REALTIME
  *
  */
+
+void dump_ts(FILE *out, char *msg, struct timespec *ts)
+{
+	fprintf(out, "%-10s: %ld.%09ld\n", msg, ts->tv_sec, ts->tv_nsec);
+}
+
 static void *timerthread(void *param)
 {
 	struct thread_param *par = param;
@@ -777,6 +781,7 @@ static void *timerthread(void *param)
 	sigset_t sigset;
 	timer_t timer;
 	struct timespec now, next, interval, stop;
+	struct timespec period_begin, period_end;
 	struct itimerval itimer;
 	struct itimerspec tspec;
 	struct thread_stat *stat = par->stats;
@@ -800,6 +805,10 @@ static void *timerthread(void *param)
 	interval.tv_nsec = (par->interval % USEC_PER_SEC) * 1000;
 
 	stat->tid = gettid();
+
+	char *fname;
+	asprintf(&fname, "debug-%d.log", stat->tid);
+	FILE *dbg = fopen(fname, "w");
 
 	sigemptyset(&sigset);
 	sigaddset(&sigset, par->signal);
@@ -846,7 +855,7 @@ static void *timerthread(void *param)
 	}
 	else
 #endif
-		clock_gettime(par->clock, &now);
+	clock_gettime(par->clock, &now);
 
 	next = now;
 	next.tv_sec += interval.tv_sec;
@@ -878,68 +887,49 @@ static void *timerthread(void *param)
 
 	while (!shutdown) {
 
-		uint64_t diff;
+		long diff;
 		int sigs, ret;
 
+		clock_gettime(par->clock, &period_begin);
 		/* Wait for next period */
-		switch (par->mode) {
-		case MODE_CYCLIC:
-		case MODE_SYS_ITIMER:
-			if (sigwait(&sigset, &sigs) < 0)
-				goto out;
-			break;
 
-		case MODE_CLOCK_NANOSLEEP:
-			if (par->timermode == TIMER_ABSTIME) {
-				if ((ret = clock_nanosleep(par->clock, TIMER_ABSTIME, &next, NULL))) {
-					if (ret != EINTR)
-						warn("clock_nanosleep failed. errno: %d\n", errno);
-					goto out;
-				}
-			} else {
-				if ((ret = clock_gettime(par->clock, &now))) {
-					if (ret != EINTR)
-						warn("clock_gettime() failed: %s", strerror(errno));
-					goto out;
-				}
-				if ((ret = clock_nanosleep(par->clock, TIMER_RELTIME, &interval, NULL))) {
-					if (ret != EINTR)
-						warn("clock_nanosleep() failed. errno: %d\n", errno);
-					goto out;
-				}
-				next.tv_sec = now.tv_sec + interval.tv_sec;
-				next.tv_nsec = now.tv_nsec + interval.tv_nsec;
-				tsnorm(&next);
-			}
-			break;
 
-		case MODE_SYS_NANOSLEEP:
-			if ((ret = clock_gettime(par->clock, &now))) {
-				if (ret != EINTR)
-					warn("clock_gettime() failed: errno %d\n", errno);
-				goto out;
-			}
-			if (nanosleep(&interval, NULL)) {
-				if (errno != EINTR)
-					warn("nanosleep failed. errno: %d\n", errno);
-				goto out;
-			}
-			next.tv_sec = now.tv_sec + interval.tv_sec;
-			next.tv_nsec = now.tv_nsec + interval.tv_nsec;
-			tsnorm(&next);
-			break;
-		}
-
-		if ((ret = clock_gettime(par->clock, &now))) {
-			if (ret != EINTR)
-				warn("clock_getttime() failed. errno: %d\n", errno);
+		// Si sigwait() ne bloque pas, le signal est deja dans la file
+		// et le temps ecoule est faible
+		if (sigwait(&sigset, &sigs) < 0)
 			goto out;
+
+		clock_gettime(par->clock, &period_end);
+		now = period_end;
+
+		diff = calcdiff(period_end, period_begin);
+		long orig_diff = calcdiff(now, next);
+
+		while (orig_diff < 0) {
+			// the next interval was too far in the future, rewind it
+			dump_ts(dbg, "rewind before", &next);
+			next.tv_sec -= interval.tv_sec;
+			next.tv_nsec -= interval.tv_nsec;
+			if (next.tv_nsec < 0) {
+				next.tv_sec--;
+				next.tv_nsec += NSEC_PER_SEC;
+			}
+			orig_diff = calcdiff(now, next);
+			dump_ts(dbg, "rewind after", &next);
 		}
 
-		if (use_nsecs)
-			diff = calcdiff_ns(now, next);
-		else
-			diff = calcdiff(now, next);
+		if (diff < 0 || orig_diff < 0) {
+			fprintf(dbg, "tid: %d\n", stat->tid);
+			fprintf(dbg, "cycles: %" PRIu64 "\n", stat->cycles);
+			fprintf(dbg, "orig  : %" PRIu64 "\n", orig_diff);
+			fprintf(dbg, "diff  : %" PRIu64 "\n", diff);
+			dump_ts(dbg, "begin", &period_begin);
+			dump_ts(dbg, "end", &period_end);
+			dump_ts(dbg, "next", &next);
+			shutdown++;
+		}
+		diff = orig_diff;
+
 		if (diff < stat->min)
 			stat->min = diff;
 		if (diff > stat->max) {
@@ -948,80 +938,56 @@ static void *timerthread(void *param)
 				pthread_cond_signal(&refresh_on_max_cond);
 		}
 
-		if (diff > INT_MAX) {
-
-			struct timespec res;
-			res.tv_sec  = now.tv_sec  - next.tv_sec;
-			res.tv_nsec = now.tv_nsec - next.tv_nsec;
-
-			printf("err diff: %" PRIu64 "\n", diff);
-			printf("now : %ld.%09ld\n", now.tv_sec, now.tv_nsec);
-			printf("next: %ld.%09ld\n", next.tv_sec, next.tv_nsec);
-			printf("res1: %ld.%09ld\n", res.tv_sec, res.tv_nsec);
-
-			if(now.tv_nsec < next.tv_nsec) {
-				res.tv_sec--;
-				res.tv_nsec += NSEC_PER_SEC;
-			}
-
-			printf("res2: %ld.%09ld\n", res.tv_sec, res.tv_nsec);
-			uint64_t d = USEC_PER_SEC * res.tv_sec + res.tv_nsec / 1000;
-			printf("d   : %" PRIu64 "\n", d);
-			shutdown++;
-		}
-
 		stat->avg += (double) diff;
 
-		if (duration && (calcdiff(now, stop) >= 0))
-			shutdown++;
-
-		if (!stopped && tracelimit && (diff > tracelimit)) {
-			stopped++;
-			tracemark("hit latency threshold (%" PRIu64 " > %d)",
-				  diff, tracelimit);
-			tracing(0);
-			shutdown++;
-			pthread_mutex_lock(&break_thread_id_lock);
-			if (break_thread_id == 0)
-				break_thread_id = stat->tid;
-			break_thread_value = diff;
-			pthread_mutex_unlock(&break_thread_id_lock);
-		}
 		stat->act = diff;
 
 		if (par->bufmsk)
 			stat->values[stat->cycles & par->bufmsk] = diff;
 
-		/* Update the histogram */
-		if (histogram) {
-			if (diff >= histogram) {
-				stat->hist_overflow++;
-				if (stat->num_outliers < histogram)
-					stat->outliers[stat->num_outliers++] = stat->cycles;
-			}
-			else
-				stat->hist_array[diff]++;
-		}
-
 		stat->cycles++;
 
 		next.tv_sec += interval.tv_sec;
 		next.tv_nsec += interval.tv_nsec;
-		if (par->mode == MODE_CYCLIC) {
-			int overrun_count = timer_getoverrun(timer);
-			next.tv_sec += overrun_count * interval.tv_sec;
-			next.tv_nsec += overrun_count * interval.tv_nsec;
-		}
+		int overrun_count = timer_getoverrun(timer);
+		next.tv_sec += overrun_count * interval.tv_sec;
+		next.tv_nsec += overrun_count * interval.tv_nsec;
 		tsnorm(&next);
 
-		while (tsgreater(&now, &next)) {
-			next.tv_sec += interval.tv_sec;
-			next.tv_nsec += interval.tv_nsec;
-			tsnorm(&next);
+		int nradj = 0;
+		if (tsgreater(&now, &next)) {
+			fprintf(dbg, "### ADJUST NEXT BEGIN\n");
+			dump_ts(dbg, "now", &now);
+			dump_ts(dbg, "next", &next);
+			while (tsgreater(&now, &next)) {
+				next.tv_sec += interval.tv_sec;
+				next.tv_nsec += interval.tv_nsec;
+				tsnorm(&next);
+				nradj++;
+				dump_ts(dbg, "adj", &next);
+			}
+			fprintf(dbg, "### ADJUST NEXT END\n");
 		}
 
-		if (par->max_cycles && par->max_cycles == stat->cycles)
-			break;
+		struct itimerspec status;
+		struct timespec act;
+		timer_gettime(timer, &status);
+		clock_gettime(CLOCK_MONOTONIC, &act);
+		act.tv_sec += status.it_value.tv_sec;
+		act.tv_nsec += status.it_value.tv_nsec;
+		tsnorm(&act);
+		// if positive, it means that (next - value) -> next > value
+		// if negative, it means that (next - value) -> next < value
+		// there should be only a small difference between curr and next
+		fprintf(dbg, "%d %d %d %ld %ld.%09ld %ld.%09ld %ld\n",
+				stat->tid,
+				overrun_count,
+				nradj,
+				interval.tv_nsec,
+				act.tv_sec, act.tv_nsec,
+				next.tv_sec, next.tv_nsec,
+				calcdiff_ns(act, next));
+		fflush(dbg);
 	}
 
 out:
