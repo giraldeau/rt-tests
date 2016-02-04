@@ -72,8 +72,11 @@ all: $(TARGETS) hwlatdetect
 # Include dependency files, automatically generate them if needed.
 -include $(sources:.c=.d)
 
-cyclictest: cyclictest.o librttest.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIBS) $(RTTESTLIB) $(NUMA_LIBS)
+tp.o: tp.c
+	$(CC) -I. $(CFLAGS) -fpic -c -o $@ $< $(LIBS)
+
+cyclictest: cyclictest.o tp.o librttest.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tp.o $< $(LIBS) -ldl -llttng-ust $(RTTESTLIB) $(NUMA_LIBS)
 
 signaltest: signaltest.o librttest.a
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIBS) $(RTTESTLIB)

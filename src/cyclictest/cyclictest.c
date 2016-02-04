@@ -40,6 +40,10 @@
 
 #include "rt-utils.h"
 
+#define TRACEPOINT_DEFINE
+#define TRACEPOINT_PROBE_DYNAMIC_LINKAGE
+#include "tp.h"
+
 #define DEFAULT_INTERVAL 1000
 #define DEFAULT_DISTANCE 500
 
@@ -221,6 +225,8 @@ static void print_stat(FILE *fp, struct thread_param *par, int index, int verbos
 
 static int latency_target_fd = -1;
 static int32_t latency_target_value = 0;
+
+static void ignore(int ret) { (void) ret; }
 
 /* Latency trick
  * if the file /dev/cpu_dma_latency exists,
@@ -437,7 +443,7 @@ static void tracemark(char *fmt, ...)
 	va_start(ap, fmt);
 	len = vsnprintf(tracebuf, TRACEBUFSIZ, fmt, ap);
 	va_end(ap);
-	write(tracemark_fd, tracebuf, len);
+	ignore(write(tracemark_fd, tracebuf, len));
 }
 
 
@@ -450,7 +456,7 @@ void tracing(int on)
 		case KV_26_LT24: prctl(0, 1); break;
 		case KV_26_33:
 		case KV_30:
-			write(trace_fd, "1", 1);
+			ignore(write(trace_fd, "1", 1));
 			break;
 		default:	 break;
 		}
@@ -460,7 +466,7 @@ void tracing(int on)
 		case KV_26_LT24: prctl(0, 0); break;
 		case KV_26_33:
 		case KV_30:
-			write(trace_fd, "0", 1);
+			ignore(write(trace_fd, "0", 1));
 			break;
 		default:	break;
 		}
@@ -822,9 +828,9 @@ void *timerthread(void *param)
 				now.tv_nsec += offset;
 			tsnorm(&now);
 		}
-	}
-	else
+	} else {
 		clock_gettime(par->clock, &now);
+	}
 
 	next = now;
 	next.tv_sec += interval.tv_sec;
@@ -860,6 +866,7 @@ void *timerthread(void *param)
 		int sigs, ret;
 
 		/* Wait for next period */
+		tracepoint(cyclictest, wait, par->tnum);
 		switch (par->mode) {
 		case MODE_CYCLIC:
 		case MODE_SYS_ITIMER:
@@ -908,6 +915,7 @@ void *timerthread(void *param)
 			break;
 		}
 
+		tracepoint(cyclictest, run, par->tnum);
 		if ((ret = clock_gettime(par->clock, &now))) {
 			if (ret != EINTR)
 				warn("clock_getttime() failed. errno: %d\n", errno);
@@ -969,6 +977,12 @@ void *timerthread(void *param)
 		}
 
 		stat->cycles++;
+
+		// calculate outlier
+		double avg = stat->avg / stat->cycles;
+		if (diff > (10 * avg)) {
+			tracepoint(cyclictest, outlier, par->tnum);
+		}
 
 		next.tv_sec += interval.tv_sec;
 		next.tv_nsec += interval.tv_nsec;
