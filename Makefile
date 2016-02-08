@@ -59,6 +59,9 @@ VPATH	+= src/backfire:
 VPATH	+= src/lib
 VPATH	+= src/hackbench
 
+LTTNG_CFLAGS := $(shell pkg-config --cflags lttng-ctl)
+LTTNG_LIBS := $(shell pkg-config --libs lttng-ctl)
+
 %.o: %.c
 	$(CC) -D VERSION_STRING=$(VERSION_STRING) -c $< $(CFLAGS) $(CPPFLAGS)
 
@@ -75,8 +78,11 @@ all: $(TARGETS) hwlatdetect
 tp.o: tp.c
 	$(CC) -I. $(CFLAGS) -fpic -c -o $@ $< $(LIBS)
 
+cyclictest.o: cyclictest.c
+	$(CC) -D VERSION_STRING=$(VERSION_STRING) -c $< $(CFLAGS) $(CPPFLAGS) $(LTTNG_CFLAGS)
+
 cyclictest: cyclictest.o tp.o librttest.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tp.o $< $(LIBS) -ldl -llttng-ust $(RTTESTLIB) $(NUMA_LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tp.o $< $(LIBS) -ldl -llttng-ust $(RTTESTLIB) $(NUMA_LIBS) $(LTTNG_LIBS)
 
 signaltest: signaltest.o librttest.a
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIBS) $(RTTESTLIB)

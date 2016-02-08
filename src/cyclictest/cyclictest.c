@@ -38,6 +38,8 @@
 #include <sys/mman.h>
 #include "rt_numa.h"
 
+#include <lttng/lttng.h>
+
 #include "rt-utils.h"
 
 #define TRACEPOINT_DEFINE
@@ -743,6 +745,158 @@ try_again:
 	return err;
 }
 
+#define SESSNAME "cyclictest"
+
+// Source: http://stackoverflow.com/questions/6932401/elegant-error-checking
+#define CHECK(x) do { \
+  int retval = (x); \
+  if (retval != 0) { \
+    fprintf(stderr, "Runtime error: %s returned %d at %s:%d", #x, retval, __FILE__, __LINE__); \
+    goto error; \
+  } \
+} while (0)
+
+static const char *tpnames[] = {
+	"sched_switch",
+	"sched_wakeup",
+	NULL,
+};
+
+pthread_mutex_t ss_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t ss_cond = PTHREAD_COND_INITIALIZER;
+pthread_barrier_t ss_barrier;
+pthread_t ss_thread;
+struct timespec ss_last = { 0, 0 };
+int ss_active;
+int ss_requested;
+
+void *lttng_snapshot_thread(void* arg)
+{
+	/*
+	int ret;
+	struct sched_param schedp;
+
+	memset(&schedp, 0, sizeof(schedp));
+	schedp.sched_priority = 99;
+	ret = setscheduler(0, SCHED_FIFO, &schedp);
+	if (ret) {
+		warn("lttng snapshot thread setscheduler failed: %d\n", ret);
+	}
+	*/
+	pthread_barrier_wait(&ss_barrier);
+	while(1) {
+		pthread_mutex_lock(&ss_mutex);
+		// while(snapshot active or not requested or not shutdown
+		while (!shutdown && (ss_active || !ss_requested)) {
+			printf("lttng cond_wait active=%d requested=%d shutdown=%d\n",
+					ss_active, ss_requested, shutdown);
+			pthread_cond_wait(&ss_cond, &ss_mutex);
+		}
+		if (shutdown) {
+			pthread_mutex_unlock(&ss_mutex);
+			break;
+		}
+		ss_active = 1;
+		ss_requested = 0;
+		pthread_mutex_unlock(&ss_mutex);
+		printf("lttng snapshot record\n");
+		struct lttng_snapshot_output *out = lttng_snapshot_output_create();
+		CHECK(lttng_snapshot_record(SESSNAME, out, 0));
+		pthread_mutex_lock(&ss_mutex);
+		ss_active = 0;
+		pthread_mutex_unlock(&ss_mutex);
+
+	}
+error:
+	shutdown++;
+	return NULL;
+}
+
+void lttng_teardown()
+{
+	printf("lttng teardown\n");
+	pthread_mutex_lock(&ss_mutex);
+	shutdown++;
+        pthread_cond_signal(&ss_cond);
+        pthread_mutex_unlock(&ss_mutex);
+        pthread_join(ss_thread, NULL);
+
+	lttng_stop_tracing(SESSNAME);
+	lttng_destroy_session(SESSNAME);
+}
+
+int lttng_setup()
+{
+	printf("lttng setup\n");
+	int i;
+	struct lttng_domain dom;
+	struct lttng_channel chan;
+	struct lttng_event ev;
+	struct lttng_handle *handle;
+
+	memset(&dom, 0, sizeof(dom));
+	dom.type = LTTNG_DOMAIN_KERNEL;
+
+	memset(&chan, 0, sizeof(chan));
+	strcpy(chan.name, "k");
+	chan.attr.overwrite = 0;
+	chan.attr.subbuf_size = 4096;
+	chan.attr.num_subbuf = 512; // 4k * 512 = 2MB
+	chan.attr.switch_timer_interval = 0;
+	chan.attr.read_timer_interval = 200;
+	chan.attr.output = LTTNG_EVENT_SPLICE;
+
+	CHECK(lttng_create_session_snapshot(SESSNAME, "file:///tmp/cyclictest"));
+	handle = lttng_create_handle(SESSNAME, &dom);
+	CHECK(lttng_enable_channel(handle, &chan));
+
+	// enable selected tracepoints
+	for (i = 0; tpnames[i] != NULL; i++) {
+		memset(&ev, 0, sizeof(ev));
+		strcpy(ev.name, tpnames[i]);
+		ev.type = LTTNG_EVENT_TRACEPOINT;
+		ev.loglevel_type = LTTNG_EVENT_LOGLEVEL_ALL;
+		CHECK(lttng_enable_event(handle, &ev, "k"));
+	}
+
+	// enable all syscalls
+	memset(&ev, 0, sizeof(ev));
+	strcpy(ev.name, "*");
+	ev.type = LTTNG_EVENT_SYSCALL;
+	ev.loglevel_type = LTTNG_EVENT_LOGLEVEL_ALL;
+	CHECK(lttng_enable_event(handle, &ev, "k"));
+
+	// enable all UST events
+	free(handle);
+	dom.type = LTTNG_DOMAIN_UST;
+	handle = lttng_create_handle(SESSNAME, &dom);
+
+	memset(&chan, 0, sizeof(chan));
+	strcpy(chan.name, "u");
+	chan.attr.overwrite = 0;
+	chan.attr.subbuf_size = 4096;
+	chan.attr.num_subbuf = 2; // 4k * 2 = 8kB
+	chan.attr.switch_timer_interval = 0;
+	chan.attr.read_timer_interval = 200;
+	chan.attr.output = LTTNG_EVENT_SPLICE;
+	CHECK(lttng_enable_channel(handle, &chan));
+
+	memset(&ev, 0, sizeof(ev));
+	strcpy(ev.name, "*");
+	ev.type = LTTNG_EVENT_TRACEPOINT;
+	ev.loglevel_type = LTTNG_EVENT_LOGLEVEL_ALL;
+	CHECK(lttng_enable_event(handle, &ev, "u"));
+
+	CHECK(lttng_start_tracing(SESSNAME));
+	CHECK(pthread_barrier_init(&ss_barrier, NULL, 2));
+	CHECK(pthread_create(&ss_thread, NULL, lttng_snapshot_thread, NULL));
+	pthread_barrier_wait(&ss_barrier);
+	return 0;
+error:
+	lttng_teardown();
+	return -1;
+}
+
 /*
  * timer thread
  *
@@ -769,6 +923,7 @@ void *timerthread(void *param)
 	int stopped = 0;
 	cpu_set_t mask;
 	pthread_t thread;
+	uint64_t snapshot_ratelimit = 1E6; // minimal delay between snapshot in us
 
 	/* if we're running in numa mode, set our memory node */
 	if (par->node != -1)
@@ -982,6 +1137,17 @@ void *timerthread(void *param)
 		double avg = stat->avg / stat->cycles;
 		if (diff > (10 * avg)) {
 			tracepoint(cyclictest, outlier, par->tnum);
+
+			// trigger a snapshot (ratelimited)
+			pthread_mutex_lock(&ss_mutex);
+			uint64_t prev  = calcdiff(now, ss_last);
+			if (prev > snapshot_ratelimit) {
+				fprintf(stderr, "snapshot %lu\n", prev);
+				ss_requested = 1;
+				pthread_cond_signal(&ss_cond);
+				ss_last = now;
+			}
+			pthread_mutex_unlock(&ss_mutex);
 		}
 
 		next.tv_sec += interval.tv_sec;
@@ -1859,6 +2025,7 @@ int main(int argc, char **argv)
 		warn("Running on unknown kernel version...YMMV\n");
 
 	setup_tracer();
+	lttng_setup();
 
 	if (check_timer())
 		warn("High resolution timers not available\n");
@@ -2142,6 +2309,8 @@ int main(int argc, char **argv)
  outall:
 	shutdown = 1;
 	usleep(50000);
+
+	lttng_teardown();
 
 	if (quiet)
 		quiet = 2;
