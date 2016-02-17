@@ -772,17 +772,18 @@ int ss_requested;
 
 void *lttng_snapshot_thread(void* arg)
 {
-	/*
 	int ret;
 	struct sched_param schedp;
+	struct lttng_snapshot_output *out;
+
 
 	memset(&schedp, 0, sizeof(schedp));
 	schedp.sched_priority = 99;
 	ret = setscheduler(0, SCHED_FIFO, &schedp);
 	if (ret) {
 		warn("lttng snapshot thread setscheduler failed: %d\n", ret);
+		exit(1);
 	}
-	*/
 	pthread_barrier_wait(&ss_barrier);
 	while(1) {
 		pthread_mutex_lock(&ss_mutex);
@@ -799,15 +800,19 @@ void *lttng_snapshot_thread(void* arg)
 		ss_active = 1;
 		ss_requested = 0;
 		pthread_mutex_unlock(&ss_mutex);
-		printf("lttng snapshot record\n");
-		struct lttng_snapshot_output *out = lttng_snapshot_output_create();
-		CHECK(lttng_snapshot_record(SESSNAME, out, 0));
+		CHECK(lttng_stop_tracing(SESSNAME));
+		out = lttng_snapshot_output_create();
+		if (out) {
+			CHECK(lttng_snapshot_record(SESSNAME, out, 0));
+			lttng_snapshot_output_destroy(out);
+		}
 		pthread_mutex_lock(&ss_mutex);
 		ss_active = 0;
 		pthread_mutex_unlock(&ss_mutex);
-
+		printf("lttng snapshot record\n");
 	}
 error:
+
 	shutdown++;
 	return NULL;
 }
