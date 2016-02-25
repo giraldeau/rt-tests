@@ -778,7 +778,7 @@ void *lttng_snapshot_thread(void* arg)
 
 
 	memset(&schedp, 0, sizeof(schedp));
-	schedp.sched_priority = 99;
+	schedp.sched_priority = 55; // lower priority than actual rt threads
 	ret = setscheduler(0, SCHED_FIFO, &schedp);
 	if (ret) {
 		warn("lttng snapshot thread setscheduler failed: %d\n", ret);
