@@ -800,17 +800,21 @@ void *lttng_snapshot_thread(void* arg)
 		ss_active = 1;
 		ss_requested = 0;
 		pthread_mutex_unlock(&ss_mutex);
+		tracepoint(cyclictest, snapshot_begin);
 		CHECK(lttng_stop_tracing(SESSNAME));
 		out = lttng_snapshot_output_create();
 		if (out) {
 			CHECK(lttng_snapshot_record(SESSNAME, out, 0));
 			lttng_snapshot_output_destroy(out);
 		}
+		CHECK(lttng_start_tracing(SESSNAME));
+		tracepoint(cyclictest, snapshot_end);
 		pthread_mutex_lock(&ss_mutex);
 		ss_active = 0;
 		pthread_mutex_unlock(&ss_mutex);
 		printf("lttng snapshot record\n");
 	}
+	pthread_barrier_wait(&ss_barrier);
 error:
 
 	shutdown++;
@@ -824,6 +828,8 @@ void lttng_teardown()
 	shutdown++;
         pthread_cond_signal(&ss_cond);
         pthread_mutex_unlock(&ss_mutex);
+
+        pthread_barrier_wait(&ss_barrier);
         pthread_join(ss_thread, NULL);
 
 	lttng_stop_tracing(SESSNAME);
@@ -837,6 +843,7 @@ int lttng_setup()
 	struct lttng_domain dom;
 	struct lttng_channel chan;
 	struct lttng_event ev;
+	struct lttng_event_context ctx;
 	struct lttng_handle *handle;
 
 	memset(&dom, 0, sizeof(dom));
@@ -871,6 +878,11 @@ int lttng_setup()
 	ev.loglevel_type = LTTNG_EVENT_LOGLEVEL_ALL;
 	CHECK(lttng_enable_event(handle, &ev, "k"));
 
+	// add vtid event context to kernel events
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.ctx = LTTNG_EVENT_CONTEXT_VTID;
+	CHECK(lttng_add_context(handle, &ctx, "*", "k"));
+
 	// enable all UST events
 	free(handle);
 	dom.type = LTTNG_DOMAIN_UST;
@@ -880,7 +892,7 @@ int lttng_setup()
 	strcpy(chan.name, "u");
 	chan.attr.overwrite = 0;
 	chan.attr.subbuf_size = 4096;
-	chan.attr.num_subbuf = 2; // 4k * 2 = 8kB
+	chan.attr.num_subbuf = 32; // 4k * 32 = 128kB
 	chan.attr.switch_timer_interval = 0;
 	chan.attr.read_timer_interval = 200;
 	chan.attr.output = LTTNG_EVENT_SPLICE;
@@ -891,6 +903,11 @@ int lttng_setup()
 	ev.type = LTTNG_EVENT_TRACEPOINT;
 	ev.loglevel_type = LTTNG_EVENT_LOGLEVEL_ALL;
 	CHECK(lttng_enable_event(handle, &ev, "u"));
+
+	// add vtid event context to user event
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.ctx = LTTNG_EVENT_CONTEXT_VTID;
+	CHECK(lttng_add_context(handle, &ctx, "*", "u"));
 
 	CHECK(lttng_start_tracing(SESSNAME));
 	CHECK(pthread_barrier_init(&ss_barrier, NULL, 2));
@@ -1153,6 +1170,7 @@ void *timerthread(void *param)
 				ss_last = now;
 			}
 			pthread_mutex_unlock(&ss_mutex);
+			shutdown++;
 		}
 
 		next.tv_sec += interval.tv_sec;

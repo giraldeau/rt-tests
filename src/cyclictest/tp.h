@@ -27,6 +27,16 @@ TRACEPOINT_EVENT(cyclictest, outlier,
 	)
 )
 
+TRACEPOINT_EVENT(cyclictest, snapshot_begin,
+	TP_ARGS(),
+	TP_FIELDS()
+)
+
+TRACEPOINT_EVENT(cyclictest, snapshot_end,
+	TP_ARGS(),
+	TP_FIELDS()
+)
+
 #endif /* _TRACEPOINT_CYCLICTEST_H */
 
 #undef TRACEPOINT_INCLUDE
