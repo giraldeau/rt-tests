@@ -1170,7 +1170,6 @@ void *timerthread(void *param)
 				ss_last = now;
 			}
 			pthread_mutex_unlock(&ss_mutex);
-			shutdown++;
 		}
 
 		next.tv_sec += interval.tv_sec;
