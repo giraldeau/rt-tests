@@ -1,0 +1,76 @@
+#!/usr/bin/env python2
+
+class BasicCommand(object):
+    def setup_arguments(self, parser):
+        pass
+    def run(self, args):
+        print(args)
+
+class CyclictestCommand(BasicCommand):
+
+    defaults = {
+        "threads": 1,
+        "mlockall": None,
+        "distance": 0,
+        "duration": 1,
+        "histogram": 300,
+        "interval": 1000,
+        "affinity": 3,
+        "notrace": None,
+        "quiet": None,
+        "priority": 99,
+        "policy": "fifo",
+    }
+
+    experiments = {
+        "isolcpu": {
+            "cyclictest": {
+                "affinity": 3,
+            },
+        },
+        "no_isolcpu": {
+            "cyclictest": {
+                "affinity": 0,
+            },
+        },
+    }
+
+    def __init__(self):
+        self.choices = ["all"] + CyclictestCommand.experiments.keys()
+
+    def setup_arguments(self, parser):
+        parser.add_argument("experiment", nargs='?',
+            choices=self.choices,
+            default=self.choices[0])
+        parser.add_argument("--list-experiments", action="store_true", default=False)
+
+    def run(self, args):
+        if args.list_experiments:
+            print("Experiments: " + " ".join(self.choices))
+
+class AnalysisCommand(BasicCommand):
+    pass
+
+if __name__=="__main__":
+
+    commands = {
+        "cyclictest": CyclictestCommand(),
+        "analysis": AnalysisCommand()
+    }
+
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-v", "--verbose", help="increase output verbosity",
+                        action="store_true")
+
+    subparsers = parser.add_subparsers(help='sub-command help', dest="cmd")
+    for name, command in commands.items():
+        sub = subparsers.add_parser(name)
+        command.setup_arguments(sub)
+
+    args = parser.parse_args()
+
+    obj = commands[args.cmd]
+    obj.run(args)
