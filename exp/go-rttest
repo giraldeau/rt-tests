@@ -1,61 +1,189 @@
 #!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+
+from subprocess import Popen, PIPE
+import signal
+import os
+import time
+#import pprint
 
 class BasicCommand(object):
+    
     def setup_arguments(self, parser):
         pass
+    
     def run(self, args):
         print(args)
+        
+    def cleanup(self):
+        pass
 
-class CyclictestCommand(BasicCommand):
+class ExperimentCommand(BasicCommand):
 
     defaults = {
-        "threads": 1,
-        "mlockall": None,
-        "distance": 0,
-        "duration": 1,
-        "histogram": 300,
-        "interval": 1000,
-        "affinity": 3,
-        "notrace": None,
-        "quiet": None,
-        "priority": 99,
-        "policy": "fifo",
+        "cyclictest": {
+            "threads": 1,
+            "mlockall": None,
+            "distance": 0,
+            "duration": 1,
+            "histogram": 300,
+            "interval": 1000,
+            "affinity": 3,
+            "notrace": None,
+            "quiet": None,
+            "priority": 99,
+            "policy": "fifo",
+        }
     }
 
     experiments = {
         "isolcpu": {
-            "cyclictest": {
+            "prog": "cyclictest",
+            "opts": {
                 "affinity": 3,
             },
         },
         "no_isolcpu": {
-            "cyclictest": {
+            "prog": "cyclictest",
+            "opts": {
                 "affinity": 0,
             },
         },
     }
 
-    def __init__(self):
-        self.choices = ["all"] + CyclictestCommand.experiments.keys()
+    # FIXME: uses parameters instead of hardcoded values 
+    workloads = {
+        "idle": {
+            "prog": "date",
+        },
+        "hdd": {
+            "prog": "stress",
+            "opts": {
+                "io": 8,
+                "hdd-bytes": "4096B",
+                "hdd": 8,
+            },
+        },
+        "mem": {
+            "prog": "stress",
+            "opts": {
+                "vm": 8,
+                "vm-bytes": "128M",
+            },
+        },
+        "cpu": {
+            "prog": "stress",
+            "opts": {
+                "cpu": 8,
+            }
+        },
+        "mix": {
+            "prog": "stress",
+            "opts": {
+                "cpu": 8,
+                "io": 4,
+                "vm": 2,
+                "vm-bytes": "128M",
+            },
+        },
+    }
 
+    def __init__(self):
+        self.choices = ["all"] + self.experiments.keys()
+        self.exp = None
+        self.wkl = None
+
+    def _merge_dict(self, d1, d2):
+        d = {}
+        for k1, v1 in d1.items():
+            d[k1] = v1
+        for k2, v2 in d2.items():
+            d[k2] = v2
+        return d 
+
+    def _build_command(self, prog, opts):
+        cmd = [prog]
+        for opt, val in opts.items():
+            cmd.append("--" + opt)
+            if val is not None:
+                cmd.append(str(val))
+        return cmd
+    
+    def _expand_commands(self, exp, defaults):
+        cmds = {}
+        for name, params in exp.items():
+            prog = params["prog"]
+            d1 = self.defaults.get(prog, {})
+            d2 = params.get("opts", {})
+            opts = self._merge_dict(d1, d2)
+            cmd = self._build_command(prog, opts)
+            cmds[name] = cmd
+        return cmds
+    
     def setup_arguments(self, parser):
         parser.add_argument("experiment", nargs='?',
             choices=self.choices,
             default=self.choices[0])
         parser.add_argument("--list-experiments", action="store_true", default=False)
+        parser.add_argument("--dry-run", action="store_true", default=False)
+
+    def terminate_task_group(self, handle):
+        if handle and handle.poll() is None:
+            os.killpg(os.getpgid(handle.pid), signal.SIGTERM)
+            handle.wait()
+
+    def terminate_task(self, handle):
+        if handle and handle.poll() is None:
+            handle.terminate()
 
     def run(self, args):
         if args.list_experiments:
             print("Experiments: " + " ".join(self.choices))
+            return
+        
+        exp_cmds = self._expand_commands(self.experiments, self.defaults)
+        wkl_cmds = self._expand_commands(self.workloads, self.defaults)
+        
+        if args.verbose:
+            print(exp_cmds)
+            print(wkl_cmds)
+        
+        # create output directory
+        base_dir = "/tmp/go-rttest/"
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+        
+        for wkl_name, wkl_cmd in wkl_cmds.items():
+            for exp_name, exp_cmd in exp_cmds.items():
+                # start the workload
+                self.wkl = Popen(wkl_cmd, preexec_fn=os.setsid, stdout=PIPE, stderr=PIPE)
+                time.sleep(1)
+                
+                # run the main program for the specified amount of time
+                self.exp = Popen(exp_cmd, stdout=PIPE, stderr=PIPE)
+                time.sleep(1)
+                self.terminate_task(self.exp)
+                
+                # terminate the workload
+                self.terminate_task_group(self.wkl)
 
-class AnalysisCommand(BasicCommand):
-    pass
+                out, unused_err = self.exp.communicate()
+                
+                out_path = os.path.join(base_dir, exp_name, wkl_name)
+                if not os.path.exists(out_path):
+                    os.makedirs(out_path)
+                out_file = os.path.join(out_path, exp_cmd[0] + ".stdout")
+                with open(out_file, "w") as f:
+                    f.write(out)
+
+    def cleanup(self):
+        self.terminate_task(self.exp)
+        self.terminate_task_group(self.wkl)
 
 if __name__=="__main__":
 
     commands = {
-        "cyclictest": CyclictestCommand(),
-        "analysis": AnalysisCommand()
+        "experiments": ExperimentCommand()
     }
 
     import argparse
@@ -73,4 +201,10 @@ if __name__=="__main__":
     args = parser.parse_args()
 
     obj = commands[args.cmd]
-    obj.run(args)
+    try:
+        obj.run(args)
+    except KeyboardInterrupt:
+        print("exiting...")
+    finally:
+        obj.cleanup()
+    
