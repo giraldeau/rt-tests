@@ -152,20 +152,31 @@ class ExperimentCommand(BasicCommand):
         for wkl_name, wkl_cmd in wkl_cmds.items():
             for exp_name, exp_cmd in exp_cmds.items():
                 # start the workload
+                if args.verbose:
+                    print("Exec:" + " ".join(wkl_cmd))
                 self.wkl = Popen(wkl_cmd, preexec_fn=os.setsid, stdout=PIPE, stderr=PIPE)
                 time.sleep(1)
                 
                 # run the main program for the specified amount of time
+                if args.verbose:
+                    print("Exec:" + " ".join(exp_cmd))
                 self.exp = Popen(exp_cmd, stdout=PIPE, stderr=PIPE)
-                time.sleep(args.duration)
-                self.terminate_task(self.exp)
-                
+                # wait for a startup error
+                tstart = time.time()
+                while((time.time() - tstart) < args.duration):
+                    ret = self.exp.poll()
+                    if ret and ret is not 0:
+                        out, err = self.exp.communicate()
+                        raise RuntimeError("Command failed (ret={}) {}\n{}\n{}".format(ret, " ".join(exp_cmd), out, err))
+
                 # terminate the workload
+                self.terminate_task(self.exp)
                 self.terminate_task_group(self.wkl)
 
                 out, unused_err = self.exp.communicate()
                                     
                 info = self.machine_info()
+                
                 self.parse_cyclictest_hist(info, out)
                 info["experiment"] = exp_name
                 info["workload"] = wkl_name
@@ -312,7 +323,6 @@ class CPUGovernor(object):
 
     def _set_governor(self, cpu, name):
         cpufile = "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_governor".format(cpu)
-        print(cpufile + " " + name)
         temp = "powersave"
         with open(cpufile, "r") as governor:
             temp = governor.read().strip()
@@ -327,7 +337,6 @@ class CPUGovernor(object):
             self.state[cpu] = self._set_governor(cpu, name)
             
     def restore(self):
-        print(self.state)
         for cpu, gov in self.state.items():
             self._set_governor(cpu, gov)
 
@@ -357,6 +366,8 @@ if __name__=="__main__":
         obj.run(args)
     except KeyboardInterrupt:
         print("exiting...")
+    except Exception as e:
+        print(e)
     finally:
         obj.cleanup()
 

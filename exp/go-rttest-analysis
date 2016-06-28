@@ -1,0 +1,137 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+
+import os
+import copy
+import pprint
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+
+color_list = (
+    '#8d0000',
+    '#00007f',
+    '#ff7000',
+    '#00c6ff',
+    '#b7ff46',
+)
+
+class BasicCommand(object):
+    
+    def setup_arguments(self, parser):
+        pass
+    
+    def run(self, args):
+        print(args)
+        
+    def cleanup(self):
+        pass
+
+class PlotCommand(BasicCommand):
+    def __init__(self):
+        pass
+    
+    def setup_arguments(self, parser):
+        parser.add_argument("--results-dir", type=str, default="results/")
+    
+    def normalize_serie(self, serie, total):
+        # avoid division by zero
+        if total == 0:
+            total = 1
+        norm = []
+        for v in serie:
+            norm.append(float(v) / total)
+        return norm
+
+    def make_figure_histogram(self, plot, out_path):
+        plt.figure()
+        # axes does not applies to bar colors
+        #plt.rc('axes', prop_cycle=(cycler('color', color_list)))
+        print(out_path)
+        series = plot.get("series", [])
+        fig, ax = plt.subplots()
+        
+        for i, serie in enumerate(series):
+            hist = serie["data"]
+            x = [x for x in range(len(hist))]
+            ax.bar(x, hist,
+                    alpha=0.4,
+                    color=color_list[i % len(color_list)],
+                    linewidth=0,
+                    label=serie.get("label", "serie {}".format(i)))
+            ax.legend()
+        plt.grid(True)
+        plt.title(plot.get("title", "no title"))
+        plt.yscale('log')
+        plt.savefig(out_path)
+        plt.close()
+
+    def run(self, args):
+        
+        # load all data
+        data = []
+        for base, dirnames, fnames in os.walk(args.results_dir):
+            for fname in fnames:
+                if not fname.endswith(".json"):
+                    continue
+                
+                data_path = os.path.join(base, fname)
+                with open(data_path, "r") as f:
+                    d = json.load(f)
+                    d["fname"] = fname
+                    data.append(d)
+        
+        out_dir = "plots"
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+        
+        # for each data item, output a plot
+        for item in data:
+            results = item.get("results", [])
+            plot = {
+                "title": "Scheduling latency",
+                "series": [],
+            }
+            
+            for i, r in enumerate(results):
+                hist = copy.copy(r["histogram"]) 
+                hist.append(r["overflows"])
+                plot["series"].append({
+                       "label": "Thread {}".format(i),
+                       "data": hist
+                   }
+                )
+            
+            fname = item.get("fname")
+            bname = fname[:-len(".json")]
+            out_path = os.path.join(out_dir, "{}.png".format(bname))
+            self.make_figure_histogram(plot, out_path)
+
+if __name__=="__main__":
+
+    commands = {
+        "plot": PlotCommand()
+    }
+
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-v", "--verbose", help="increase output verbosity",
+                        action="store_true")
+
+    subparsers = parser.add_subparsers(help='sub-command help', dest="cmd")
+    for name, command in commands.items():
+        sub = subparsers.add_parser(name)
+        command.setup_arguments(sub)
+
+    args = parser.parse_args()
+
+    obj = commands[args.cmd]
+    
+    try:
+        obj.run(args)
+    except KeyboardInterrupt:
+        print("exiting...")
+    finally:
+        obj.cleanup()
