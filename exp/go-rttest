@@ -10,6 +10,7 @@ import re
 import time
 import sys
 import json
+import copy
 
 class BasicCommand(object):
     
@@ -40,23 +41,15 @@ class ExperimentCommand(BasicCommand):
         }
     }
 
+    # Seems the relative option with too short interval overflows
+    # the statistics computation
     experiments = {
         "isolcpu": {
             "prog": "cyclictest",
             "opts": {
                 "affinity": "2-3",
                 "threads": 2,
-                "relative": None,
-                "interval": 1,
-            },
-        },
-        "ftrace": {
-            "prog": "cyclictest",
-            "opts": {
-                "affinity": "2-3",
-                "threads": 2,
-                "relative": None,
-                "interval": 1,
+                "interval": 100,
             },
         },
     }
@@ -81,6 +74,7 @@ class ExperimentCommand(BasicCommand):
         self.exp = None
         self.wkl = None
         self._tried_modprobe_configs = False
+        self.gov = CPUGovernor()
 
     def _merge_dict(self, d1, d2):
         d = {}
@@ -117,6 +111,7 @@ class ExperimentCommand(BasicCommand):
         #parser.add_argument("--dry-run", action="store_true", default=False)
         parser.add_argument("--duration", type=float, default=1)
         parser.add_argument("--machine-info", action="store_true", default=False)
+        parser.add_argument("--disable-frequency-scaling", action="store_true", default=False)
         parser.add_argument("--output", type=str, default="/tmp/go-rttest/")
 
     def terminate_task_group(self, handle):
@@ -137,7 +132,10 @@ class ExperimentCommand(BasicCommand):
             info = self.machine_info()
             with open("machine.json", "w") as f:
                 f.write(json.dumps(info, indent=2, sort_keys=True))
-            sys.exit(0)
+            return
+        
+        if args.disable_frequency_scaling:
+            self.gov.set_governor("performance")
         
         exp_cmds = self._expand_commands(self.experiments, self.defaults)
         wkl_cmds = self._expand_commands(self.workloads, self.defaults)
@@ -166,31 +164,69 @@ class ExperimentCommand(BasicCommand):
                 self.terminate_task_group(self.wkl)
 
                 out, unused_err = self.exp.communicate()
-                
-                out_path = os.path.join(base_dir, exp_name, wkl_name)
-                if not os.path.exists(out_path):
-                    os.makedirs(out_path)
-                out_file = os.path.join(out_path, exp_cmd[0] + ".stdout")
-                with open(out_file, "w") as f:
-                    f.write(out)
-                    
+                                    
                 info = self.machine_info()
+                self.parse_cyclictest_hist(info, out)
                 info["experiment"] = exp_name
                 info["workload"] = wkl_name
-                out_file = os.path.join(out_path, machine + ".info")
-                with open() as f:
-                    pass
-                
+                info["now"] = time.time()
 
+                now = time.strftime("%Y%m%d%H%M%S")
+                result_file = "{}_{}_{}.json".format(now, exp_name, wkl_name)
+                out_path = os.path.join(base_dir, result_file)
+
+                with open(out_path, "w") as f:
+                    f.write(json.dumps(info, indent=2, sort_keys=True))
+                
     def cleanup(self):
         self.terminate_task(self.exp)
         self.terminate_task_group(self.wkl)
+        self.gov.restore()
     
-    def parse_kconfig(self, info, file):
+    def parse_cyclictest_hist(self, info, out):
+        r1 = re.compile("(?P<bucket>[0-9]+)\s+((?P<value>[0-9]+)\s*)+")    
+        item = {
+            "histogram": [],
+            "total": 0,
+            "min": 0,
+            "max": 0,
+            "avg": 0,
+            "overflows": 0,
+        }
+        
+        data = []
+        
+        labels = {
+            "total": "# Total:",
+            "min": "# Min Latencies:",
+            "max": "# Max Latencies:",
+            "avg": "# Avg Latencies:",
+            "overflows": "# Histogram Overflows:",
+        }
+        
+        for line in out.splitlines():
+            m = r1.match(line)
+            if m:
+                col = len(m.groups())
+                # initialize the data
+                if len(data) == 0:
+                    for c in range(col - 1):
+                        data.append(copy.deepcopy(item))
+                for c in range(1, col):
+                    data[c - 1]["histogram"].append(int(m.groups()[c]))
+            else:
+                for name, head in labels.items():
+                    if line.startswith(head):
+                        values = line[len(head):].strip().split()
+                        for i, v in enumerate(values):
+                            data[i][name] = int(v)
+        info["results"] = data
+    
+    def parse_kconfig(self, info, data):
         r1 = re.compile("# (?P<label>CONFIG_[A-Z0-9_]+) is not set")
         r2 = re.compile("(?P<label>CONFIG_[A-Z0-9_]+)=(?P<value>.*)")
         r = [r1, r2]
-        for line in file.readlines():
+        for line in data.splitlines():
             for rx in r:
                 m = rx.match(line)
                 if m:
@@ -200,9 +236,9 @@ class ExperimentCommand(BasicCommand):
                     info[label] = value
                     break
     
-    def parse_cpuinfo(self, info, file):
+    def parse_cpuinfo(self, info, data):
         rx = re.compile("(?P<label>([a-zA-Z0-9_]+([ ]+[a-zA-Z0-9_]+)?))\s*:\s*(?P<value>.*)")
-        for line in file.readlines():
+        for line in data.splitlines():
             m = rx.match(line)
             if m:
                 l = m.group("label")
@@ -238,12 +274,12 @@ class ExperimentCommand(BasicCommand):
             kconfig_path = "/boot/config-%s" % uname.strip()
             if os.path.isfile(kconfig_path):
                 with open(kconfig_path, "r") as f:
-                    self.parse_kconfig(info, f)
+                    self.parse_kconfig(info, f.read())
         
         cpuinfo = "/proc/cpuinfo"
         if os.path.isfile(cpuinfo):
             with open(cpuinfo, "r") as f:
-                self.parse_cpuinfo(info, f)
+                self.parse_cpuinfo(info, f.read())
         
         
         bootid = "/proc/sys/kernel/random/boot_id"
@@ -317,14 +353,10 @@ if __name__=="__main__":
 
     obj = commands[args.cmd]
     
-    gov = CPUGovernor()
-    
     try:
-        gov.set_governor("performance")
         obj.run(args)
     except KeyboardInterrupt:
         print("exiting...")
     finally:
         obj.cleanup()
-        gov.restore()
 
