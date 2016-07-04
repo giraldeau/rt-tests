@@ -10,7 +10,7 @@ def push():
 @task
 @parallel
 def exp():
-    run("~/go-rttest experiments --duration 10")
+    run("~/go-rttest experiments --duration 600")
 
 @task
 def fetch():
