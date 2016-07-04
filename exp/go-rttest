@@ -3,7 +3,7 @@
 
 # Do not import nothing fancy, this is inteded to run on an embedded target
 
-from subprocess import Popen, PIPE, check_output
+from subprocess import Popen, PIPE, check_output, check_call
 import signal
 import os
 import re
@@ -158,6 +158,9 @@ class ExperimentCommand(BasicCommand):
         
         if args.disable_frequency_scaling:
             self.gov.set_governor("performance")
+        
+        # set runtime limits for rt task
+        check_call(["sysctl", "-w", "kernel.sched_rt_runtime_us=-1"])
         
         exp_cmds = self._expand_commands(self.experiments, self.defaults)
         wkl_cmds = self._expand_commands(self.workloads, self.defaults)
@@ -324,7 +327,8 @@ class ExperimentCommand(BasicCommand):
             with open(bootid, "r") as f:
                 info["bootid"] = f.read().strip()
         
-        output = check_output(["sysctl", "--all"], stderr=PIPE)
+        # use sysctl -a instead of --all, the later is not supported by busybox
+        output = check_output(["sysctl", "-a"], stderr=PIPE)
         self.parse_sysctl(info, output)
         
         cmdline = "/proc/cmdline"
