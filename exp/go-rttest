@@ -67,12 +67,20 @@ class ExperimentCommand(BasicCommand):
                 "hdd": 8,
             },
         },
+        "net": {
+            "prog": "netperf",
+            "spawn": 10,
+            "opts": {
+               "l": 0,
+               "H": "berta.dorsal.polymtl.ca",
+            }
+        }
     }
 
     def __init__(self):
         self.choices = ["all"] + self.experiments.keys()
         self.exp = None
-        self.wkl = None
+        self.wkl = []
         self._tried_modprobe_configs = False
         self.gov = CPUGovernor()
 
@@ -87,7 +95,10 @@ class ExperimentCommand(BasicCommand):
     def _build_command(self, prog, opts):
         cmd = [prog]
         for opt, val in opts.items():
-            cmd.append("--" + opt)
+            if len(opt) == 1:
+                cmd.append("-" + opt)
+            else:
+                cmd.append("--" + opt)
             if val is not None:
                 cmd.append(str(val))
         return cmd
@@ -115,6 +126,11 @@ class ExperimentCommand(BasicCommand):
         parser.add_argument("--output", type=str, default="/tmp/go-rttest/")
 
     def terminate_task_group(self, handle):
+        if isinstance(handle, list):
+           for h in handle:
+               self.terminate_task_group(h)
+           del handle[:]
+           return
         if handle and handle.poll() is None:
             os.killpg(os.getpgid(handle.pid), signal.SIGTERM)
             handle.wait()
@@ -122,6 +138,12 @@ class ExperimentCommand(BasicCommand):
     def terminate_task(self, handle):
         if handle and handle.poll() is None:
             handle.terminate()
+
+    def check_task(self, task):
+        ret = task.poll()
+        if ret and ret is not 0:
+            out, err = task.communicate()
+            raise RuntimeError("Command failed (ret={}) {}\n{}\n{}".format(ret, " ".join(exp_cmd), out, err))
 
     def run(self, args):
         if args.list_experiments:
@@ -152,22 +174,26 @@ class ExperimentCommand(BasicCommand):
         for wkl_name, wkl_cmd in wkl_cmds.items():
             for exp_name, exp_cmd in exp_cmds.items():
                 # start the workload
-                if args.verbose:
-                    print("Exec:" + " ".join(wkl_cmd))
-                self.wkl = Popen(wkl_cmd, preexec_fn=os.setsid, stdout=PIPE, stderr=PIPE)
+
+                spawn = self.workloads[wkl_name].get("spawn", 1)
+                for i in range(spawn):
+                    if args.verbose:
+                        print("Exec:" + " ".join(wkl_cmd))
+                    wkl = Popen(wkl_cmd, preexec_fn=os.setsid, stdout=PIPE, stderr=PIPE)
+                    self.wkl.append(wkl)
+                # workload warm-up
                 time.sleep(1)
                 
                 # run the main program for the specified amount of time
                 if args.verbose:
                     print("Exec:" + " ".join(exp_cmd))
                 self.exp = Popen(exp_cmd, stdout=PIPE, stderr=PIPE)
-                # wait for a startup error
                 tstart = time.time()
                 while((time.time() - tstart) < args.duration):
-                    ret = self.exp.poll()
-                    if ret and ret is not 0:
-                        out, err = self.exp.communicate()
-                        raise RuntimeError("Command failed (ret={}) {}\n{}\n{}".format(ret, " ".join(exp_cmd), out, err))
+                    # FIXME: check if the workload is still running
+                    self.check_task(self.exp)
+                    for task in self.wkl:
+                        self.check_task(task)
 
                 # terminate the workload
                 self.terminate_task(self.exp)
