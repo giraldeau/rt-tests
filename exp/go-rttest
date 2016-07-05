@@ -47,9 +47,10 @@ class ExperimentCommand(BasicCommand):
         "isolcpu": {
             "prog": "cyclictest",
             "opts": {
-                "affinity": "2-3",
+                "affinity": "3,0",
                 "threads": 2,
-                "interval": 100,
+                "interval": 1000,
+                "distance": 0,
             },
         },
     }
