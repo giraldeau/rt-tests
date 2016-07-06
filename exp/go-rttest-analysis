@@ -88,8 +88,11 @@ class PlotCommand(BasicCommand):
         # for each data item, output a plot
         for item in data:
             results = item.get("results", [])
+            osrelease = item["kernel.osrelease"]
+            modelname = item["model name"]
+            title = "Scheduling latency\n{} {}".format(osrelease, modelname)
             plot = {
-                "title": "Scheduling latency",
+                "title": title,
                 "series": [],
             }
             
