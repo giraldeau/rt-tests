@@ -248,13 +248,15 @@ class ExperimentCommand(BasicCommand):
         for line in out.splitlines():
             m = r1.match(line)
             if m:
-                col = len(m.groups())
+                samples = line.split()
+                col = len(samples)
                 # initialize the data
                 if len(data) == 0:
                     for c in range(col - 1):
                         data.append(copy.deepcopy(item))
                 for c in range(1, col):
-                    data[c - 1]["histogram"].append(int(m.groups()[c]))
+                    v = int(samples[c])
+                    data[c - 1]["histogram"].append(v)
             else:
                 for name, head in labels.items():
                     if line.startswith(head):
